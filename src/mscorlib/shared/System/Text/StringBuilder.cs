@@ -878,6 +878,54 @@ namespace System.Text
             }
         }
 
+        public void CopyTo(int sourceIndex, Span<char> destination, int count)
+        {
+            if (count < 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(count), SR.Arg_NegativeArgCount);
+            }
+
+            if ((uint)sourceIndex > (uint)Length)
+            {
+                throw new ArgumentOutOfRangeException(nameof(sourceIndex), SR.ArgumentOutOfRange_Index);
+            }
+
+            if (sourceIndex > Length - count)
+            {
+                throw new ArgumentException(SR.Arg_LongerThanSrcString);
+            }
+            Contract.EndContractBlock();
+
+            AssertInvariants();
+
+            StringBuilder chunk = this;
+            int sourceEndIndex = sourceIndex + count;
+            int curDestIndex = count;
+            while (count > 0)
+            {
+                int chunkEndIndex = sourceEndIndex - chunk.m_ChunkOffset;
+                if (chunkEndIndex >= 0)
+                {
+                    chunkEndIndex = Math.Min(chunkEndIndex, chunk.m_ChunkLength);
+
+                    int chunkCount = count;
+                    int chunkStartIndex = chunkEndIndex - count;
+                    if (chunkStartIndex < 0)
+                    {
+                        chunkCount += chunkStartIndex;
+                        chunkStartIndex = 0;
+                    }
+                    curDestIndex -= chunkCount;
+                    count -= chunkCount;
+
+                    // We ensure that chunkStartIndex + chunkCount are within range of m_chunkChars as well as
+                    // ensuring that curDestIndex + chunkCount are within range of destination
+                    ThreadSafeCopy(chunk.m_ChunkChars, chunkStartIndex, destination, curDestIndex, chunkCount);
+                }
+                chunk = chunk.m_ChunkPrevious;
+            }
+        }
+
         /// <summary>
         /// Inserts a string 0 or more times into this builder at the specified position.
         /// </summary>
@@ -1025,6 +1073,21 @@ namespace System.Text
                 unsafe
                 {
                     fixed (char* valueChars = &value[0])
+                    {
+                        Append(valueChars, value.Length);
+                    }
+                }
+            }
+            return this;
+        }
+
+        public StringBuilder Append(ReadOnlySpan<char> value)
+        {
+            if (value.Length > 0)
+            {
+                unsafe
+                {
+                    fixed (char* valueChars = &value.DangerousGetPinnableReference())
                     {
                         Append(valueChars, value.Length);
                     }
@@ -1262,6 +1325,27 @@ namespace System.Text
         public StringBuilder Insert(int index, ulong value) => Insert(index, value.ToString(), 1);
 
         public StringBuilder Insert(int index, Object value) => (value == null) ? this : Insert(index, value.ToString(), 1);
+
+        public StringBuilder Insert(int index, ReadOnlySpan<char> value)
+        {
+            Contract.Ensures(Contract.Result<StringBuilder>() != null);
+            Contract.EndContractBlock();
+
+            if ((uint)index > (uint)Length)
+            {
+                throw new ArgumentOutOfRangeException(nameof(index), SR.ArgumentOutOfRange_Index);
+            }
+
+            if (value.Length > 0)
+            {
+                unsafe
+                {
+                    fixed (char* sourcePtr = &value.DangerousGetPinnableReference())
+                        Insert(index, sourcePtr, value.Length);
+                }
+            }
+            return this;
+        }
 
         public StringBuilder AppendFormat(String format, Object arg0) => AppendFormatHelper(null, format, new ParamsArray(arg0));
 
@@ -1985,7 +2069,7 @@ namespace System.Text
         /// This method prevents out-of-bounds writes in the case a different thread updates a field in the builder just before a copy begins.
         /// All interesting variables are copied out of the heap into the parameters of this method, and then bounds checks are run.
         /// </remarks>
-        private static unsafe void ThreadSafeCopy(char* sourcePtr, char[] destination, int destinationIndex, int count)
+        private static unsafe void ThreadSafeCopy(char* sourcePtr, Span<char> destination, int destinationIndex, int count)
         {
             if (count > 0)
             {
@@ -2001,7 +2085,7 @@ namespace System.Text
             }
         }
 
-        private static void ThreadSafeCopy(char[] source, int sourceIndex, char[] destination, int destinationIndex, int count)
+        private static void ThreadSafeCopy(char[] source, int sourceIndex, Span<char> destination, int destinationIndex, int count)
         {
             if (count > 0)
             {
